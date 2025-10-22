@@ -4,76 +4,118 @@ pipeline {
     timestamps()
     durabilityHint('PERFORMANCE_OPTIMIZED')
   }
+
   environment {
-    // for PR comment + pushing deploy branches
-    GITHUB_REPO    = 'jmiguelcheq/calculator-demo-jenkins'
-    TEST_JOB_NAME  = 'calculator-test-demo-jenkins'
-    TEST_BRANCH    = "main"
+    GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
+    TEST_PARENT   = 'calculator-test-demo-jenkins'
+    TEST_BRANCH   = 'main'
   }
+
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
 
-    stage('Build App') {
+    stage('Build / Package App') {
       steps {
-        // Adjust to your build; Java/Maven example:
-        sh 'mvn -B -q -DskipTests clean package'
-        archiveArtifacts artifacts: 'target/**', allowEmptyArchive: true
+        // Example for a static site (your /src is deployed). Adjust for your stack.
+        sh '''
+          rm -rf dist && mkdir -p dist
+          # If you have a build step (e.g., npm build / maven package), do it here.
+          # For demo, copy ./src as "artifact"
+          cp -r src/* dist/ || true
+        '''
+        archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
       }
     }
 
-    stage('Run Automation Tests (Other Repo)') {
+    stage('Run Automation Tests (Testing repo)') {
       steps {
         script {
-          // Ensure test multibranch child exists by scanning once, or use 'main'
-          // child path usually: job/<PARENT>/job/<BRANCH>
-          def childPath = "job/${env.TEST_JOB_NAME}/job/${env.TEST_BRANCH}"
-          echo "Triggering ${childPath}"
+          // Trigger the multibranch child: job/<parent>/job/<branch>
+          def childPath = "job/${env.TEST_PARENT}/job/${env.TEST_BRANCH}"
+          echo "Triggering: ${childPath} with APP_SHA=${GIT_COMMIT}"
 
-          def result = build job: childPath, wait: true, propagate: false
-          echo "Testing result: ${result.result}"
+          def buildRes = build job: childPath,
+            wait: true,
+            propagate: false,
+            // Parameters expected by the testing Jenkinsfile
+            parameters: [
+              string(name: 'APP_REPO', value: env.GITHUB_REPO),
+              string(name: 'APP_SHA',  value: env.GIT_COMMIT),
+              string(name: 'CALC_URL', value: 'https://jmiguelcheq.github.io/calculator-demo'),
+              booleanParam(name: 'HEADLESS', value: true)
+            ]
 
-          if (result.result != 'SUCCESS') {
+          echo "Testing result: ${buildRes.result}"
+          if (buildRes.result != 'SUCCESS') {
             currentBuild.result = 'FAILURE'
-            // Post PR comment if this is a PR build
-            if (env.CHANGE_ID) {
+
+            // 1) Set commit status = failure
+            if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 sh """
-                  set -e
-                  pr=\${CHANGE_ID}
-                  repo=\${CHANGE_URL#*github.com/}
-                  repo=\${repo%%/pull/*}
-                  msg="❌ Automation tests **failed** in Jenkins build #${BUILD_NUMBER}. See ${BUILD_URL}"
                   curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
-                    -X POST \\
-                    -d '{\"body\":\"'"\${msg//\"/\\\"}"'\"}' \\
-                    https://api.github.com/repos/\$repo/issues/\$pr/comments
+                    -X POST https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT} \\
+                    -d '{ "state": "failure", "context": "Remote UI Tests", "description": "Remote tests failed", "target_url": "${buildRes.absoluteUrl}" }'
                 """
               }
             }
-            error("Automation tests failed in testing repo.")
+
+            // 2) Comment on PR if this is a PR build
+            if (env.CHANGE_ID) {
+              withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+                sh """
+                  pr=\${CHANGE_ID}
+                  repo=\${CHANGE_URL#*github.com/}
+                  repo=\${repo%%/pull/*}
+                  body=$(cat <<'EOT'
+🚨 **Automation tests failed** for this PR.
+
+Report & logs: ${buildRes.absoluteUrl}
+
+> Conclusion: **FAILURE**
+EOT
+)
+                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
+                    -X POST https://api.github.com/repos/\$repo/issues/\$pr/comments \\
+                    -d @- <<JSON
+{ "body": "$body" }
+JSON
+                """
+              }
+            }
+
+            error("Failing because testing repo reported ${buildRes.result}.")
+          } else {
+            // Set commit status = success (optional — GitHub Branch Source may already do basics)
+            if (env.GIT_COMMIT) {
+              withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+                sh """
+                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
+                    -X POST https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT} \\
+                    -d '{ "state": "success", "context": "Remote UI Tests", "description": "Remote tests passed", "target_url": "${buildRes.absoluteUrl}" }'
+                """
+              }
+            }
           }
         }
       }
     }
 
-    stage('Deploy to Staging') {
-      when { branch 'main' } // only deploy when main updates; remove if you want per-branch staging
+    stage('Deploy to Staging (gh-pages-staging)') {
+      when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
           sh """
-            git config user.email "jenkins@local"
-            git config user.name "Jenkins CI"
-            # example: publish static site to gh-pages (staging) branch
-            rm -rf dist && mkdir -p dist
-            # COPY YOUR BUILD OUTPUT into dist (adjust below)
-            cp -r target/* dist/ || true
+            set -e
+            git config --global user.email "jenkins@local"
+            git config --global user.name "Jenkins CI"
 
             rm -rf /tmp/gh && mkdir -p /tmp/gh && cd /tmp/gh
             git init
             git remote add origin https://$GITHUB_TOKEN@github.com/${GITHUB_REPO}.git
-            git checkout -b gh-pages-staging
+            git checkout -B gh-pages-staging
             rm -rf ./*
             cp -r /var/jenkins_home/workspace/${JOB_NAME}/dist/* . || true
             git add .
@@ -93,41 +135,25 @@ pipeline {
       }
     }
 
-    stage('Deploy to Production') {
+    stage('Deploy to Production (gh-pages)') {
       when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
           sh """
-            git config user.email "jenkins@local"
-            git config user.name "Jenkins CI"
-            # example: publish to gh-pages (production)
+            set -e
+            git config --global user.email "jenkins@local"
+            git config --global user.name "Jenkins CI"
+
             rm -rf /tmp/ghprod && mkdir -p /tmp/ghprod && cd /tmp/ghprod
             git init
             git remote add origin https://$GITHUB_TOKEN@github.com/${GITHUB_REPO}.git
-            git checkout -b gh-pages
+            git checkout -B gh-pages
             rm -rf ./*
             cp -r /var/jenkins_home/workspace/${JOB_NAME}/dist/* . || true
             git add .
             git commit -m "Deploy production from build #${BUILD_NUMBER}" || true
             git push -f origin gh-pages
           """
-        }
-      }
-    }
-  }
-
-  post {
-    failure {
-      // Set explicit GitHub commit status (optional; Jenkins GitHub plugin already sets basic statuses)
-      script {
-        if (env.GIT_COMMIT) {
-          withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-            sh """
-              curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
-                -X POST https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT} \\
-                -d '{ "state": "failure", "context": "jenkins/app-pipeline", "description": "Build or tests failed", "target_url": "${BUILD_URL}" }'
-            """
-          }
         }
       }
     }
