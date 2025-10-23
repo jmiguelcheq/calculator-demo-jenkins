@@ -6,9 +6,9 @@ pipeline {
   }
 
   environment {
-    GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
-    TEST_PARENT   = 'calculator-test-demo-jenkins'
-    TEST_BRANCH   = 'main'
+    GITHUB_REPO = 'jmiguelcheq/calculator-demo-jenkins'
+    TEST_PARENT = 'calculator-test-demo-jenkins'
+    TEST_BRANCH = 'main'
   }
 
   stages {
@@ -18,11 +18,10 @@ pipeline {
 
     stage('Build / Package App') {
       steps {
-        // Example for a static site (your /src is deployed). Adjust for your stack.
         sh '''
           rm -rf dist && mkdir -p dist
-          # If you have a build step (e.g., npm build / maven package), do it here.
-          # For demo, copy ./src as "artifact"
+          # If you have a build step (npm build / maven package), do it here.
+          # For this demo, copy ./src to dist as "artifact"
           cp -r src/* dist/ || true
         '''
         archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
@@ -39,7 +38,6 @@ pipeline {
           def buildRes = build job: childPath,
             wait: true,
             propagate: false,
-            // Parameters expected by the testing Jenkinsfile
             parameters: [
               string(name: 'APP_REPO', value: env.GITHUB_REPO),
               string(name: 'APP_SHA',  value: env.GIT_COMMIT),
@@ -54,46 +52,51 @@ pipeline {
             // 1) Set commit status = failure
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+                // No bash ${..%%..} or $() here, so double-quotes are fine
                 sh """
-                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
-                    -X POST https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT} \\
+                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT}" \
                     -d '{ "state": "failure", "context": "Remote UI Tests", "description": "Remote tests failed", "target_url": "${buildRes.absoluteUrl}" }'
                 """
               }
             }
 
-            // 2) Comment on PR if this is a PR build
+            // 2) Comment on PR if this is a PR build (uses bash ${..#..} and ${..%%..} => use single quotes)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                sh """
-                  pr=\${CHANGE_ID}
-                  repo=\${CHANGE_URL#*github.com/}
-                  repo=\${repo%%/pull/*}
-                  body=$(cat <<'EOT'
+                // pass the Groovy URL to shell via env to avoid Groovy interpolation in a single-quoted block
+                withEnv(["RUN_URL=${buildRes.absoluteUrl}"]) {
+                  sh '''
+                    pr=${CHANGE_ID}
+                    repo=${CHANGE_URL#*github.com/}
+                    repo=${repo%%/pull/*}
+
+                    body=$(cat <<'EOT'
 🚨 **Automation tests failed** for this PR.
 
-Report & logs: ${buildRes.absoluteUrl}
+Report & logs: $RUN_URL
 
 > Conclusion: **FAILURE**
 EOT
 )
-                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
-                    -X POST https://api.github.com/repos/\$repo/issues/\$pr/comments \\
-                    -d @- <<JSON
+                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
+                      -d @- <<JSON
 { "body": "$body" }
 JSON
-                """
+                  '''
+                }
               }
             }
 
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
-            // Set commit status = success (optional — GitHub Branch Source may already do basics)
+            // Set commit status = success
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 sh """
-                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \\
-                    -X POST https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT} \\
+                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT}" \
                     -d '{ "state": "success", "context": "Remote UI Tests", "description": "Remote tests passed", "target_url": "${buildRes.absoluteUrl}" }'
                 """
               }
@@ -107,21 +110,21 @@ JSON
       when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-          sh """
+          sh '''
             set -e
             git config --global user.email "jenkins@local"
             git config --global user.name "Jenkins CI"
 
             rm -rf /tmp/gh && mkdir -p /tmp/gh && cd /tmp/gh
             git init
-            git remote add origin https://$GITHUB_TOKEN@github.com/${GITHUB_REPO}.git
+            git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
             git checkout -B gh-pages-staging
             rm -rf ./*
-            cp -r /var/jenkins_home/workspace/${JOB_NAME}/dist/* . || true
+            cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
             git add .
-            git commit -m "Deploy staging from build #${BUILD_NUMBER}" || true
+            git commit -m "Deploy staging from build #$BUILD_NUMBER" || true
             git push -f origin gh-pages-staging
-          """
+          '''
         }
       }
     }
@@ -139,21 +142,21 @@ JSON
       when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-          sh """
+          sh '''
             set -e
             git config --global user.email "jenkins@local"
             git config --global user.name "Jenkins CI"
 
             rm -rf /tmp/ghprod && mkdir -p /tmp/ghprod && cd /tmp/ghprod
             git init
-            git remote add origin https://$GITHUB_TOKEN@github.com/${GITHUB_REPO}.git
+            git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
             git checkout -B gh-pages
             rm -rf ./*
-            cp -r /var/jenkins_home/workspace/${JOB_NAME}/dist/* . || true
+            cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
             git add .
-            git commit -m "Deploy production from build #${BUILD_NUMBER}" || true
+            git commit -m "Deploy production from build #$BUILD_NUMBER" || true
             git push -f origin gh-pages
-          """
+          '''
         }
       }
     }
