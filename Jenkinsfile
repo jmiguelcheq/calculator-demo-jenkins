@@ -283,6 +283,7 @@ JSON
             git checkout -B gh-pages-staging
             rm -rf ./*
             cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
+            touch .nojekyll
             git add .
             git commit -m "Deploy staging from build #$BUILD_NUMBER" || true
             git push -f origin gh-pages-staging
@@ -315,6 +316,7 @@ JSON
             git checkout -B gh-pages
             rm -rf ./*
             cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
+            touch .nojekyll
             git add .
             git commit -m "Deploy production from build #$BUILD_NUMBER" || true
             git push -f origin gh-pages
