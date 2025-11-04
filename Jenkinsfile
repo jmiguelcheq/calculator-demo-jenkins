@@ -1,12 +1,12 @@
 pipeline {
   agent any
-  options {
-    timestamps()
-    durabilityHint('PERFORMANCE_OPTIMIZED')
-  }
+  options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED') }
 
   environment {
+    // This app repo (owner/repo)
     GITHUB_REPO = 'jmiguelcheq/calculator-demo-jenkins'
+
+    // Downstream testing multibranch job
     TEST_PARENT = 'calculator-test-demo-jenkins'
     TEST_BRANCH = 'main'
   }
@@ -19,9 +19,10 @@ pipeline {
     stage('Build / Package App') {
       steps {
         sh '''
+          set -e
           rm -rf dist && mkdir -p dist
-          # If you have a build step (npm build / maven package), do it here.
-          # For the demo, copy ./docs as the artifact.
+          # If you have a real build, run it here (npm build / mvn package).
+          # For the demo, copy ./docs as the built site.
           cp -r docs/* dist/ || true
         '''
         archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
@@ -31,25 +32,17 @@ pipeline {
     stage('Run Automation Tests (Testing repo)') {
       steps {
         script {
-          // Use canonical job path: "<jobName>/<branchName>"
-          def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"
-          echo "Triggering: ${childPath} with APP_SHA=${GIT_COMMIT}"
+          def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"  // "<job>/<branch>"
+          echo "Triggering downstream tests: ${childPath}"
 
-          def buildRes = build job: childPath,
-            wait: true,
-            propagate: false,
-            parameters: [
-              string(name: 'APP_REPO', value: env.GITHUB_REPO),
-              string(name: 'APP_SHA',  value: env.GIT_COMMIT),
-              string(name: 'CALC_URL', value: 'https://jmiguelcheq.github.io/calculator-demo'),
-              booleanParam(name: 'HEADLESS', value: true)
-            ]
-
+          // Testing job is non-parameterized; it uses its own defaults (REMOTE CALC_URL)
+          def buildRes = build job: childPath, wait: true, propagate: false
           echo "Testing result: ${buildRes.result}"
+
           if (buildRes.result != 'SUCCESS') {
             currentBuild.result = 'FAILURE'
 
-            // 1) Set commit status = failure
+            // Commit status = failure
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 sh """
@@ -60,7 +53,7 @@ pipeline {
               }
             }
 
-            // 2) Comment on PR if this is a PR build (bash ${..#..} & heredoc -> use single quotes)
+            // PR comment on failure
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv(["RUN_URL=${buildRes.absoluteUrl}"]) {
@@ -68,7 +61,6 @@ pipeline {
                     pr=${CHANGE_ID}
                     repo=${CHANGE_URL#*github.com/}
                     repo=${repo%%/pull/*}
-
                     body=$(cat <<'EOT'
 🚨 **Automation tests failed** for this PR.
 
@@ -89,7 +81,7 @@ JSON
 
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
-            // Set commit status = success
+            // Commit status = success
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 sh """
@@ -104,7 +96,8 @@ JSON
       }
     }
 
-    stage('Deploy to Staging (gh-pages-staging)') {
+    // ---------- Option B deployments (Pages = main / docs) ----------
+    stage('Deploy to STAGING (main:/docs-staging)') {
       when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
@@ -116,13 +109,17 @@ JSON
             rm -rf /tmp/gh && mkdir -p /tmp/gh && cd /tmp/gh
             git init
             git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
-            git checkout -B gh-pages-staging
-            rm -rf ./*
-            cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
-            touch .nojekyll
+            git fetch origin main --depth=1
+            git checkout -B main origin/main
+
+            # Put preview under docs-staging/  -> https://<user>.github.io/<repo>/docs-staging/
+            rm -rf docs-staging
+            mkdir -p docs-staging
+            cp -r "$WORKSPACE/dist/"* docs-staging/ || true
+
             git add .
-            git commit -m "Deploy staging from build #$BUILD_NUMBER" || true
-            git push -f origin gh-pages-staging
+            git commit -m "Deploy STAGING (docs-staging) from build #$BUILD_NUMBER" || true
+            git push origin main
           '''
         }
       }
@@ -130,14 +127,10 @@ JSON
 
     stage('Approve Production Deploy') {
       when { branch 'main' }
-      steps {
-        timeout(time: 2, unit: 'HOURS') {
-          input message: 'Promote to PRODUCTION?', ok: 'Deploy'
-        }
-      }
+      steps { timeout(time: 2, unit: 'HOURS') { input message: 'Promote to PRODUCTION?', ok: 'Deploy' } }
     }
 
-    stage('Deploy to Production (gh-pages)') {
+    stage('Deploy to PRODUCTION (main:/docs)') {
       when { branch 'main' }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
@@ -149,13 +142,18 @@ JSON
             rm -rf /tmp/ghprod && mkdir -p /tmp/ghprod && cd /tmp/ghprod
             git init
             git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
-            git checkout -B gh-pages
-            rm -rf ./*
-            cp -r "/var/jenkins_home/workspace/$JOB_NAME/dist/"* . || true
-            touch .nojekyll
+            git fetch origin main --depth=1
+            git checkout -B main origin/main
+
+            # Live site under docs/  -> GitHub Pages Settings: main / docs
+            rm -rf docs
+            mkdir -p docs
+            cp -r "$WORKSPACE/dist/"* docs/ || true
+            touch docs/.nojekyll
+
             git add .
-            git commit -m "Deploy production from build #$BUILD_NUMBER" || true
-            git push -f origin gh-pages
+            git commit -m "Deploy PRODUCTION (docs) from build #$BUILD_NUMBER" || true
+            git push origin main
           '''
         }
       }
