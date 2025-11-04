@@ -12,17 +12,38 @@ pipeline {
   }
 
   stages {
+
     stage('Checkout') {
       steps { checkout scm }
     }
 
+    // Skip everything if the last commit is a deploy commit marked [skip ci]
+    stage('Guard: Skip deploy commits') {
+      steps {
+        script {
+          def msg = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+          if (msg.toLowerCase().contains('[skip ci]')) {
+            echo 'Detected [skip ci] deploy commit. Short-circuiting pipeline.'
+            currentBuild.description = 'Skipped: deploy commit'
+            // End the build cleanly without error
+            // Use "return" to skip remaining stages
+            return
+          }
+        }
+      }
+    }
+
     stage('Build / Package App') {
+      // Do not rebuild if only docs or docs-staging changed (deploy-only commit)
+      when {
+        not { changeset pattern: 'docs/**,docs-staging/**', comparator: 'ANT' }
+      }
       steps {
         sh '''
           set -e
           rm -rf dist && mkdir -p dist
-          # If you have a real build, run it here (npm build / mvn package).
-          # For the demo, copy ./docs as the built site.
+          # If you have a real build (npm/mvn), run it here.
+          # For demo, copy ./docs as the built site.
           cp -r docs/* dist/ || true
         '''
         archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
@@ -30,6 +51,20 @@ pipeline {
     }
 
     stage('Run Automation Tests (Testing repo)') {
+      // Run tests only for PRs targeting main OR for main branch builds.
+      // Also skip if the change was docs-only (deploy commit).
+      when {
+        allOf {
+          anyOf {
+            allOf {
+              changeRequest()
+              expression { env.CHANGE_TARGET == 'main' }
+            }
+            branch 'main'
+          }
+          not { changeset pattern: 'docs/**,docs-staging/**', comparator: 'ANT' }
+        }
+      }
       steps {
         script {
           def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"  // "<job>/<branch>"
@@ -96,7 +131,7 @@ JSON
       }
     }
 
-    // ---------- Option B deployments (Pages = main / docs) ----------
+    // ---------- Deployments (Pages = main / docs) ----------
     stage('Deploy to STAGING (main:/docs-staging)') {
       when { branch 'main' }
       steps {
@@ -118,7 +153,7 @@ JSON
             cp -r "$WORKSPACE/dist/"* docs-staging/ || true
 
             git add .
-            git commit -m "Deploy STAGING (docs-staging) from build #$BUILD_NUMBER" || true
+            git commit -m "[skip ci] Deploy STAGING (docs-staging) from build #$BUILD_NUMBER" || true
             git push origin main
           '''
         }
@@ -127,7 +162,11 @@ JSON
 
     stage('Approve Production Deploy') {
       when { branch 'main' }
-      steps { timeout(time: 2, unit: 'HOURS') { input message: 'Promote to PRODUCTION?', ok: 'Deploy' } }
+      steps {
+        timeout(time: 2, unit: 'HOURS') {
+          input message: 'Promote to PRODUCTION?', ok: 'Deploy'
+        }
+      }
     }
 
     stage('Deploy to PRODUCTION (main:/docs)') {
@@ -152,7 +191,7 @@ JSON
             touch docs/.nojekyll
 
             git add .
-            git commit -m "Deploy PRODUCTION (docs) from build #$BUILD_NUMBER" || true
+            git commit -m "[skip ci] Deploy PRODUCTION (docs) from build #$BUILD_NUMBER" || true
             git push origin main
           '''
         }
