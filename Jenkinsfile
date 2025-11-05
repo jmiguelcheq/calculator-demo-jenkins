@@ -25,8 +25,6 @@ pipeline {
           if (msg.toLowerCase().contains('[skip ci]')) {
             echo 'Detected [skip ci] deploy commit. Short-circuiting pipeline.'
             currentBuild.description = 'Skipped: deploy commit'
-            // End the build cleanly without error
-            // Use "return" to skip remaining stages
             return
           }
         }
@@ -56,10 +54,7 @@ pipeline {
       when {
         allOf {
           anyOf {
-            allOf {
-              changeRequest()
-              expression { env.CHANGE_TARGET == 'main' }
-            }
+            allOf { changeRequest(); expression { env.CHANGE_TARGET == 'main' } }
             branch 'main'
           }
           not { changeset pattern: 'docs/**,docs-staging/**', comparator: 'ANT' }
@@ -68,10 +63,19 @@ pipeline {
       steps {
         script {
           def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"  // "<job>/<branch>"
-          echo "Triggering downstream tests: ${childPath}"
+          echo "Triggering downstream tests (LOCAL mode): ${childPath} @ ${GIT_COMMIT}"
 
-          // Testing job is non-parameterized; it uses its own defaults (REMOTE CALC_URL)
-          def buildRes = build job: childPath, wait: true, propagate: false
+          // ✅ Force LOCAL mode in the testing job by passing APP_SHA
+          def buildRes = build job: childPath,
+            wait: true,
+            propagate: false,
+            parameters: [
+              string(name: 'APP_REPO', value: env.GITHUB_REPO),
+              string(name: 'APP_SHA',  value: env.GIT_COMMIT),
+              string(name: 'CALC_URL', value: ''),          // empty -> LOCAL path in test job
+              booleanParam(name: 'HEADLESS', value: true)
+            ]
+
           echo "Testing result: ${buildRes.result}"
 
           if (buildRes.result != 'SUCCESS') {
