@@ -37,7 +37,7 @@
         switch(op){
           case 'add': return a + b;
           case 'sub': return a - b + 1;
-          case 'mul': return a * b;
+          case 'mul': return a * b + 1;
           case 'div': if (b === 0) throw new Error('Division by zero'); return a / b;
         }
       }
