@@ -35,7 +35,7 @@
       function calc(a,b,op){
         a = parseFloat(a); b = parseFloat(b);
         switch(op){
-          case 'add': return a + b;
+          case 'add': return a + b + 1;
           case 'sub': return a - b;
           case 'mul': return a * b;
           case 'div': if (b === 0) throw new Error('Division by zero'); return a / b;
