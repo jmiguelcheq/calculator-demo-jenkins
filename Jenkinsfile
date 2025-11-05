@@ -95,24 +95,34 @@ pipeline {
             // PR comment on failure
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                withEnv(["RUN_URL=${buildRes.absoluteUrl}"]) {
+                withEnv([
+                  "RUN_URL=${buildRes.absoluteUrl}",
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
+                ]) {
                   sh '''
+                    set -e
+
                     pr=${CHANGE_ID}
                     repo=${CHANGE_URL#*github.com/}
                     repo=${repo%%/pull/*}
-                    body=$(cat <<'EOT'
-🚨 **Automation tests failed** for this PR.
 
-Report & logs: $RUN_URL
+                    # Build markdown with variables expanded (use unquoted EOF)
+                    body=$(cat <<EOF
+            🚨 **Automation tests failed** for this PR.
 
-> Conclusion: **FAILURE**
-EOT
-)
+            **Test Run:** $RUN_URL
+            **Allure Report (View):** $ALLURE_HTML_URL
+
+            > Conclusion: **FAILURE**
+            EOF
+            )
+
+                    # Escape for JSON (quotes)
+                    body_escaped=$(printf '%s' "$body" | sed 's/"/\\"/g')
+
                     curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
                       -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      -d @- <<JSON
-{ "body": "$body" }
-JSON
+                      -d "{ \"body\": \"$body_escaped\" }"
                   '''
                 }
               }
