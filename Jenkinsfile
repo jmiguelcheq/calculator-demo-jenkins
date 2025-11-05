@@ -92,42 +92,36 @@ pipeline {
               }
             }
 
-            // PR comment on failure
-            if (env.CHANGE_ID) {
-              withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                withEnv([
-                  "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_ZIP_URL=${buildRes.absoluteUrl}artifact/target/allure-report.zip"
-                ]) {
-                  sh '''
-                    set -e
+          // PR comment on failure
+          if (env.CHANGE_ID) {
+            withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+              withEnv([
+                "RUN_URL=${buildRes.absoluteUrl}",
+                "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
+              ]) {
+                sh '''
+                  set -e
 
-                    pr=${CHANGE_ID}
-                    repo=${CHANGE_URL#*github.com/}
-                    repo=${repo%%/pull/*}
+                  pr=${CHANGE_ID}
 
-                    # Build the markdown body with expanded vars (unquoted heredoc)
-                    body=$(cat <<EOF
-            🚨 **Automation tests failed** for this PR.
+                  # Build a markdown body with expanded vars (no fragile escaping)
+                  body="🚨 **Automation tests failed** for this PR.
 
-            **Test Run:** [View Jenkins Job]($RUN_URL)  
-            **Allure Report (Download):** [allure-report.zip]($ALLURE_ZIP_URL)
+          **Test Run:** [View Jenkins Job]($RUN_URL)
+          **Allure Report (View):** [Open Allure Report]($ALLURE_HTML_URL)
 
-            > Conclusion: **FAILURE**
-            EOF
-            )
+          > Conclusion: **FAILURE**"
 
-                    # Escape double quotes for JSON
-                    body_escaped=$(printf '%s' "$body" | sed 's/"/\\"/g')
-
-                    # Post to GitHub PR comments API
-                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      -d "{ \"body\": \"$body_escaped\" }"
-                  '''
-                }
+                  # Post PR comment to GitHub
+                  curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/issues/${pr}/comments" \
+                    -d @- <<JSON
+          { "body": "${body//$'\n'/\\n}" }
+          JSON
+                '''
               }
             }
+          }
 
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
