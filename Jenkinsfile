@@ -75,7 +75,7 @@ pipeline {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
                   "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
                 ]) {
                   sh '''
                     set -eu
@@ -85,10 +85,20 @@ pipeline {
                     repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                    # Build a JSON payload with explicit \n newlines
-                    body=$(printf '🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** %s  \\n**Allure Report (View):** %s\\n\\n> Conclusion: **FAILURE**' "$RUN_URL" "$ALLURE_HTML_URL")
-                    json=$(printf '{ "body": "%s" }' "$body")
+                    # 1) Build the markdown (use explicit \n for line breaks)
+                    body="$(printf '🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** %s  \\n**Allure Report (View):** %s\\n\\n> Conclusion: **FAILURE**' "$RUN_URL" "$ALLURE_HTML_URL")"
 
+                    # 2) JSON-escape without jq/python:
+                    #    - escape backslashes
+                    #    - escape double quotes
+                    #    - turn real newlines into \n sequences
+                    escaped=$(printf %s "$body" \
+                      | awk '{gsub(/\\/,"\\\\"); gsub(/\"/,"\\\""); printf "%s\\n",$0}' \
+                      | sed '$ s/\\n$//')
+
+                    json="{ \"body\": \"$escaped\" }"
+
+                    # 3) POST to GitHub PR comments API
                     curl -sS \
                       -H "Authorization: Bearer $GITHUB_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
