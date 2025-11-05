@@ -95,31 +95,25 @@ pipeline {
             // PR comment on failure
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                withEnv([
-                  "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
-                ]) {
-                  // NOTE: triple *single* quotes so Groovy does NOT interpolate $ or ${...}
-                  sh label: 'Post PR failure comment', script: '''bash -lc '
-set -euo pipefail
+                withEnv(["RUN_URL=${buildRes.absoluteUrl}"]) {
+                  sh '''
+                    pr=${CHANGE_ID}
+                    repo=${CHANGE_URL#*github.com/}
+                    repo=${repo%%/pull/*}
+                    body=$(cat <<'EOT'
+🚨 **Automation tests failed** for this PR.
 
-pr="$CHANGE_ID"
+Report & logs: $RUN_URL
 
-# Build markdown without double quotes to keep JSON simple
-body=$'\ud83d\udea8 **Automation tests failed** for this PR.\n\n'\
-$'**Test Run:** [View Jenkins Job]('"$RUN_URL"$')\n'\
-$'**Allure Report (View):** [Open Allure Report]('"$ALLURE_HTML_URL"$')\n\n'\
-$'> Conclusion: **FAILURE**'
-
-# Convert newlines to \n for JSON (body contains no double quotes)
-body_json=${body//$'\n'/\\n}
-
-curl -fsS \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  -X POST "https://api.github.com/repos/$GITHUB_REPO/issues/$pr/comments" \
-  -d "{ \"body\": \"$body_json\" }"
-'''
+> Conclusion: **FAILURE**
+EOT
+)
+                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
+                      -d @- <<JSON
+{ "body": "$body" }
+JSON
+                  '''
                 }
               }
             }
