@@ -92,33 +92,34 @@ pipeline {
               }
             }
 
-          // PR comment on failure
+          // PR comment on failure (Bash shebang + newline conversion + direct allure-single link)
           if (env.CHANGE_ID) {
             withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
               withEnv([
                 "RUN_URL=${buildRes.absoluteUrl}",
-                "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
+                "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
               ]) {
-                sh '''
-                  set -e
+                sh script: '''#!/usr/bin/env bash
+          set -euo pipefail
 
-                  pr=${CHANGE_ID}
+          pr="${CHANGE_ID}"
 
-                  # Build a markdown body with expanded vars (no fragile escaping)
-                  body="🚨 **Automation tests failed** for this PR.
+          # Build a markdown body. IMPORTANT: keep it free of double quotes (")
+          body=$'🚨 **Automation tests failed** for this PR.\n\n'\
+          $'**Test Run:** [View Jenkins Job]('"$RUN_URL"$')\n'\
+          $'**Allure Report (View):** [Open Allure Report]('"$ALLURE_HTML_URL"$')\n\n'\
+          $'> Conclusion: **FAILURE**'
 
-          **Test Run:** [View Jenkins Job]($RUN_URL)
-          **Allure Report (View):** [Open Allure Report]($ALLURE_HTML_URL)
+          # Convert newlines to \n for JSON
+          body_json=${body//$'\n'/\\n}
 
-          > Conclusion: **FAILURE**"
-
-                  # Post PR comment to GitHub
-                  curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/issues/${pr}/comments" \
-                    -d @- <<JSON
-          { "body": "${body//$'\n'/\\n}" }
-          JSON
-                '''
+          # Post comment to PR (owner/repo from GITHUB_REPO)
+          curl -fsS \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -X POST "https://api.github.com/repos/${GITHUB_REPO}/issues/${pr}/comments" \
+            -d "{ \"body\": \"${body_json}\" }"
+          ''', label: 'Post PR failure comment'
               }
             }
           }
