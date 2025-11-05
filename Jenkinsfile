@@ -95,24 +95,35 @@ pipeline {
             // PR comment on failure
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                withEnv(["RUN_URL=${buildRes.absoluteUrl}"]) {
+                withEnv([
+                  "RUN_URL=${buildRes.absoluteUrl}",
+                  "ALLURE_ZIP_URL=${buildRes.absoluteUrl}artifact/target/allure-report.zip"
+                ]) {
                   sh '''
+                    set -e
+
                     pr=${CHANGE_ID}
                     repo=${CHANGE_URL#*github.com/}
                     repo=${repo%%/pull/*}
-                    body=$(cat <<'EOT'
-🚨 **Automation tests failed** for this PR.
 
-Report & logs: $RUN_URL
+                    # Build the markdown body with expanded vars (unquoted heredoc)
+                    body=$(cat <<EOF
+            🚨 **Automation tests failed** for this PR.
 
-> Conclusion: **FAILURE**
-EOT
-)
+            **Test Run:** [View Jenkins Job]($RUN_URL)  
+            **Allure Report (Download):** [allure-report.zip]($ALLURE_ZIP_URL)
+
+            > Conclusion: **FAILURE**
+            EOF
+            )
+
+                    # Escape double quotes for JSON
+                    body_escaped=$(printf '%s' "$body" | sed 's/"/\\"/g')
+
+                    # Post to GitHub PR comments API
                     curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
                       -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      -d @- <<JSON
-{ "body": "$body" }
-JSON
+                      -d "{ \"body\": \"$body_escaped\" }"
                   '''
                 }
               }
