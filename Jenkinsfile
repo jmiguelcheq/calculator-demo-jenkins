@@ -70,29 +70,30 @@ pipeline {
               }
             }
 
-            // PR comment on failure (valid JSON with \n escapes)
+            // PR comment on failure
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
                   "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
                 ]) {
                   sh '''
-                    set -e
+                    set -eu
 
                     pr=${CHANGE_ID}
                     repo=${CHANGE_URL#*github.com/}
                     repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                    # Send JSON with explicit \n newlines (no sed/jq/python needed)
+                    # Build a JSON payload with explicit \n newlines
+                    body=$(printf '🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** %s  \\n**Allure Report (View):** %s\\n\\n> Conclusion: **FAILURE**' "$RUN_URL" "$ALLURE_HTML_URL")
+                    json=$(printf '{ "body": "%s" }' "$body")
+
                     curl -sS \
                       -H "Authorization: Bearer $GITHUB_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
                       -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      -d @- <<JSON
-            { "body": "🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** $RUN_URL  \\n**Allure Report (View):** $ALLURE_HTML_URL\\n\\n> Conclusion: **FAILURE**" }
-            JSON
+                      -d "$json"
                   '''
                 }
               }
