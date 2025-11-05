@@ -97,8 +97,9 @@ pipeline {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
                   "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
                 ]) {
+                  // NOTE: triple *single* quotes so Groovy does NOT interpolate $ or ${...}
                   sh label: 'Post PR failure comment', script: '''bash -lc '
 set -euo pipefail
 
