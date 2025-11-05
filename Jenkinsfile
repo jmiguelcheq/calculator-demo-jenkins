@@ -49,7 +49,7 @@ pipeline {
     }
 
     stage('Run Automation Tests (Testing repo)') {
-      // Run tests only for PRs targeting main OR for main branch builds.
+      // Run tests for PRs targeting main OR for main branch builds.
       // Also skip if the change was docs-only (deploy commit).
       when {
         allOf {
@@ -92,46 +92,54 @@ pipeline {
               }
             }
 
-// PR comment on failure
-if (env.CHANGE_ID) {
-  withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-    withEnv([
-      "RUN_URL=${buildRes.absoluteUrl}",
-      "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
-    ]) {
-      sh '''
-        set -e
+            // --- PR comment on failure (posts a NEW comment each run) ---
+            if (env.CHANGE_ID) {
+              withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+                withEnv([
+                  "RUN_URL=${buildRes.absoluteUrl}",
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
+                ]) {
+                  sh '''
+                    set -e
 
-        pr="${CHANGE_ID}"
+                    pr="${CHANGE_ID}"
 
-        # Derive owner/repo from CHANGE_URL; fallback to GITHUB_REPO if not present
-        repo="${CHANGE_URL#*github.com/}"
-        repo="${repo%%/pull/*}"
-        [ -n "$repo" ] || repo="$GITHUB_REPO"
+                    # Derive owner/repo from CHANGE_URL; fallback to GITHUB_REPO if not present
+                    repo="${CHANGE_URL#*github.com/}"; repo="${repo%%/pull/*}"
+                    [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-        # Build markdown with variable expansion (closing EOF must be at column 0)
+                    # Build markdown with expanded variables
 body=$(cat <<EOF
 🚨 **Automation tests failed** for this PR.
 
-**Test Run:** $RUN_URL
+**Test Run:** $RUN_URL  
 **Allure Report (View):** $ALLURE_HTML_URL
 
 > Conclusion: **FAILURE**
 EOF
 )
 
-        # Escape quotes for JSON
-        body_escaped=$(printf '%s' "$body" | sed 's/"/\\"/g')
+                    # Escape for JSON
+                    body_escaped=$(printf '%s' "$body" | sed 's/"/\\"/g')
 
-        curl -sS \
-          -H "Authorization: Bearer $GITHUB_TOKEN" \
-          -H "Accept: application/vnd.github+json" \
-          -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-          -d "{ \"body\": \"$body_escaped\" }"
-      '''
-    }
-  }
-}
+                    # Post and show API result clearly
+                    status=$(curl -sS -o /tmp/gh_resp.json -w "%{http_code}" \
+                      -H "Authorization: Bearer $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
+                      -d "{ \"body\": \"$body_escaped\" }")
+
+                    echo "GitHub comment API status: $status"
+                    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+                      echo "---- GitHub response body ----"
+                      cat /tmp/gh_resp.json || true
+                      echo "--------------------------------"
+                      exit 1
+                    fi
+                  '''
+                }
+              }
+            }
 
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
