@@ -70,7 +70,7 @@ pipeline {
               }
             }
 
-            // PR comment on failure (simple heredoc that worked before)
+            // PR comment on failure (valid JSON with \n escapes)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
@@ -85,22 +85,13 @@ pipeline {
                     repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                    # Build markdown with variables expanded (unquoted EOF)
-                    body=$(cat <<EOF
-            🚨 **Automation tests failed** for this PR.
-
-**Test Run:** $RUN_URL  
-**Allure Report (View):** $ALLURE_HTML_URL
-
-> Conclusion: **FAILURE**
-EOF
-)
-
-                    # Post to GitHub PR comments API (no sed/json gymnastics needed)
-                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                    # Send JSON with explicit \n newlines (no sed/jq/python needed)
+                    curl -sS \
+                      -H "Authorization: Bearer $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
                       -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
                       -d @- <<JSON
-            { "body": "$body" }
+            { "body": "🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** $RUN_URL  \\n**Allure Report (View):** $ALLURE_HTML_URL\\n\\n> Conclusion: **FAILURE**" }
             JSON
                   '''
                 }
