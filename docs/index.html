@@ -14,7 +14,7 @@
     </style>
   </head>
   <body>
-    <h1>Jenkins Demo Junneeel</h1>
+    <h1>Jenkins Demo Test</h1>
     <h1>Simple Calculator App</h1>
     <div class="row"><label>Number 1: <input id="a" type="number" value="2" step="any"></label></div>
     <div class="row"><label>Number 2: <input id="b" type="number" value="3" step="any"></label></div>
@@ -35,7 +35,7 @@
       function calc(a,b,op){
         a = parseFloat(a); b = parseFloat(b);
         switch(op){
-          case 'add': return a + b;
+          case 'add': return a + b + 1;
           case 'sub': return a - b;
           case 'mul': return a * b;
           case 'div': if (b === 0) throw new Error('Division by zero'); return a / b;
