@@ -70,25 +70,24 @@ pipeline {
               }
             }
 
-            // ---------- FIXED PR comment block ----------
+            // PR comment on failure (simple heredoc that worked before)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
                   "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
                 ]) {
                   sh '''
-                    set -euo pipefail
+                    set -e
 
-                    pr="${CHANGE_ID}"
-
-                    # owner/repo; fallback if CHANGE_URL is absent
-                    repo="${CHANGE_URL#*github.com/}"; repo="${repo%%/pull/*}"
+                    pr=${CHANGE_ID}
+                    repo=${CHANGE_URL#*github.com/}
+                    repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                    # Build markdown (variables expand here)
+                    # Build markdown with variables expanded (unquoted EOF)
                     body=$(cat <<EOF
-🚨 **Automation tests failed** for this PR.
+            🚨 **Automation tests failed** for this PR.
 
 **Test Run:** $RUN_URL  
 **Allure Report (View):** $ALLURE_HTML_URL
@@ -97,25 +96,12 @@ pipeline {
 EOF
 )
 
-                    # Safely JSON-escape into a file
-                    esc=$(printf '%s' "$body" | sed 's/\\/\\\\/g; s/"/\\"/g')
-                    printf '{ "body": "%s" }\n' "$esc" > /tmp/comment.json
-
-                    # Post comment with proper Content-Type; show HTTP code + body on error
-                    status=$(curl -sS -o /tmp/gh_resp.json -w "%{http_code}" \
-                      -H "Authorization: Bearer $GITHUB_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      -H "Content-Type: application/json" \
+                    # Post to GitHub PR comments API (no sed/json gymnastics needed)
+                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
                       -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      --data-binary @/tmp/comment.json)
-
-                    echo "GitHub comment API status: $status"
-                    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-                      echo "---- GitHub response body ----"
-                      cat /tmp/gh_resp.json || true
-                      echo "--------------------------------"
-                      exit 1
-                    fi
+                      -d @- <<JSON
+            { "body": "$body" }
+            JSON
                   '''
                 }
               }
