@@ -92,7 +92,7 @@ pipeline {
               }
             }
 
-            // PR comment on failure (force bash + direct allure-single link)
+            // PR comment on failure (force bash; escape $ for Groovy; link to allure-single)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
@@ -103,20 +103,20 @@ pipeline {
                     bash -lc '
                       set -euo pipefail
 
-                      pr="\${CHANGE_ID}"
+                      pr="\\${CHANGE_ID}"
 
-                      # Build markdown in a bash $'...' string; avoid double quotes inside
-                      body=\$'🚨 **Automation tests failed** for this PR.\\n\\n'\
-            \$'**Test Run:** [View Jenkins Job]('\${RUN_URL}\$')\\n'\
-            \$'**Allure Report (View):** [Open Allure Report]('\${ALLURE_HTML_URL}\$')\\n\\n'\
-            \$'> Conclusion: **FAILURE**'
+                      # Build markdown using bash ANSI-C strings. Note all \\$ to avoid Groovy interpolation.
+                      body=\\$'🚨 **Automation tests failed** for this PR.\\\\n\\\\n'
+                      body+=\\$'**Test Run:** [View Jenkins Job]('"\\\$RUN_URL"'\\$')\\\\n'
+                      body+=\\$'**Allure Report (View):** [Open Allure Report]('"\\\$ALLURE_HTML_URL"'\\$')\\\\n\\\\n'
+                      body+=\\$'> Conclusion: **FAILURE**'
 
-                      # Post comment to PR
+                      # Post the comment to the PR
                       curl -fsS \\
-                        -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+                        -H "Authorization: Bearer \\$GITHUB_TOKEN" \\
                         -H "Accept: application/vnd.github+json" \\
-                        -X POST "https://api.github.com/repos/\${GITHUB_REPO}/issues/\${pr}/comments" \\
-                        -d "{ \\"body\\": \\"\${body}\\" }"
+                        -X POST "https://api.github.com/repos/\\${GITHUB_REPO}/issues/\\${pr}/comments" \\
+                        -d "{ \\"body\\": \\"\\${body}\\" }"
                     '
                   """
                 }
