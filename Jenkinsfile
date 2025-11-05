@@ -65,7 +65,7 @@ pipeline {
           def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"  // "<job>/<branch>"
           echo "Triggering downstream tests (LOCAL mode): ${childPath} @ ${GIT_COMMIT}"
 
-          // ✅ Force LOCAL mode in the testing job by passing APP_SHA
+          // Force LOCAL mode in the testing job by passing APP_SHA
           def buildRes = build job: childPath,
             wait: true,
             propagate: false,
@@ -84,56 +84,55 @@ pipeline {
             // Commit status = failure
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                sh """
+                sh '''
                   curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT}" \
-                    -d '{ "state": "failure", "context": "Remote UI Tests", "description": "Remote tests failed", "target_url": "${buildRes.absoluteUrl}" }'
-                """
+                    -X POST "https://api.github.com/repos/$GITHUB_REPO/statuses/$GIT_COMMIT" \
+                    -d '{ "state": "failure", "context": "Remote UI Tests", "description": "Remote tests failed", "target_url": "'$BUILD_URL'" }'
+                '''
               }
             }
 
-          // PR comment on failure (Bash shebang + newline conversion + direct allure-single link)
-          if (env.CHANGE_ID) {
-            withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-              withEnv([
-                "RUN_URL=${buildRes.absoluteUrl}",
-                "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
-              ]) {
-                sh script: '''#!/usr/bin/env bash
-          set -euo pipefail
+            // PR comment on failure
+            if (env.CHANGE_ID) {
+              withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+                withEnv([
+                  "RUN_URL=${buildRes.absoluteUrl}",
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/"
+                ]) {
+                  sh label: 'Post PR failure comment', script: '''bash -lc '
+set -euo pipefail
 
-          pr="${CHANGE_ID}"
+pr="$CHANGE_ID"
 
-          # Build a markdown body. IMPORTANT: keep it free of double quotes (")
-          body=$'🚨 **Automation tests failed** for this PR.\n\n'\
-          $'**Test Run:** [View Jenkins Job]('"$RUN_URL"$')\n'\
-          $'**Allure Report (View):** [Open Allure Report]('"$ALLURE_HTML_URL"$')\n\n'\
-          $'> Conclusion: **FAILURE**'
+# Build markdown without double quotes to keep JSON simple
+body=$'\ud83d\udea8 **Automation tests failed** for this PR.\n\n'\
+$'**Test Run:** [View Jenkins Job]('"$RUN_URL"$')\n'\
+$'**Allure Report (View):** [Open Allure Report]('"$ALLURE_HTML_URL"$')\n\n'\
+$'> Conclusion: **FAILURE**'
 
-          # Convert newlines to \n for JSON
-          body_json=${body//$'\n'/\\n}
+# Convert newlines to \n for JSON (body contains no double quotes)
+body_json=${body//$'\n'/\\n}
 
-          # Post comment to PR (owner/repo from GITHUB_REPO)
-          curl -fsS \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -X POST "https://api.github.com/repos/${GITHUB_REPO}/issues/${pr}/comments" \
-            -d "{ \"body\": \"${body_json}\" }"
-          ''', label: 'Post PR failure comment'
+curl -fsS \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  -X POST "https://api.github.com/repos/$GITHUB_REPO/issues/$pr/comments" \
+  -d "{ \"body\": \"$body_json\" }"
+'''
+                }
               }
             }
-          }
 
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
             // Commit status = success
             if (env.GIT_COMMIT) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-                sh """
+                sh '''
                   curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                    -X POST "https://api.github.com/repos/${GITHUB_REPO}/statuses/${GIT_COMMIT}" \
-                    -d '{ "state": "success", "context": "Remote UI Tests", "description": "Remote tests passed", "target_url": "${buildRes.absoluteUrl}" }'
-                """
+                    -X POST "https://api.github.com/repos/$GITHUB_REPO/statuses/$GIT_COMMIT" \
+                    -d '{ "state": "success", "context": "Remote UI Tests", "description": "Remote tests passed", "target_url": "'$BUILD_URL'" }'
+                '''
               }
             }
           }
