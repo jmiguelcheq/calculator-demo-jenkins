@@ -8,7 +8,7 @@
 
 set -eu
 
-# ns timestamp
+# ns timestamp (Linux busybox and GNU date both support %N on Jenkins agents)
 ts_ns="$(date +%s%N)"
 
 # Defaults
@@ -16,8 +16,8 @@ ts_ns="$(date +%s%N)"
 : "${EXTRA_FIELDS:={}}"
 : "${LOG_MESSAGE:=}"
 
-# Build Loki payload: labels in 'stream', and JSON log line as the entry text
-# (We send a JSON string as the log line so you can parse with:  | json  in LogQL)
+# Compose Loki payload.
+# We send the log line as a JSON string so you can parse it with `| json` or `| logfmt` in Grafana.
 payload="$(jq -cn \
   --arg ts "$ts_ns" \
   --argjson labels "$STREAM_LABELS" \

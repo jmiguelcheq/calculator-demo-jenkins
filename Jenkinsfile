@@ -9,16 +9,17 @@ pipeline {
   }
 
   stages {
-    stage('Checkout') { steps { checkout scm } }
+    stage('Checkout') {
+      steps { checkout scm }
+    }
 
-    // --------------------------------------------------------------------
-    // Ensure /ci scripts are executable (for push_to_loki.sh)
-    // --------------------------------------------------------------------
+    // Ensure /ci scripts are executable
     stage('CI Permissions') {
       steps {
         sh '''
           set -eu
           [ -f ci/push_to_loki.sh ] && chmod +x ci/push_to_loki.sh || true
+          [ -f ci/summarize_tests.sh ] && chmod +x ci/summarize_tests.sh || true
         '''
       }
     }
@@ -28,7 +29,7 @@ pipeline {
         script {
           def msg = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
           if (msg.toLowerCase().contains('[skip ci]')) {
-            echo 'Detected [skip ci] deploy commit. Short-circuiting pipeline.'
+            echo 'Detected [skip ci] deploy commit. Skipping pipeline.'
             currentBuild.description = 'Skipped: deploy commit'
             return
           }
@@ -48,9 +49,6 @@ pipeline {
       }
     }
 
-    // --------------------------------------------------------------------
-    // Run the testing repo job
-    // --------------------------------------------------------------------
     stage('Run Automation Tests (Testing repo)') {
       when {
         allOf {
@@ -85,7 +83,6 @@ pipeline {
               }
             }
 
-            // ✅ Post PR comment when failed
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
@@ -100,10 +97,9 @@ pipeline {
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
                     json="{\\\"body\\\": \\\"🚨 **Automation tests failed** for this PR.\\\\n\\\\n**Test Run:** $RUN_URL  \\\\n**Allure Report:** $ALLURE_HTML_URL\\\\n\\\\n> Conclusion: **FAILURE**\\\"}"
-                    echo "Posting PR comment to https://api.github.com/repos/$repo/issues/$pr/comments"
                     curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                         -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                         -d "$json"
+                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
+                      -d "$json"
                   '''
                 }
               }
@@ -125,9 +121,6 @@ pipeline {
       }
     }
 
-    // --------------------------------------------------------------------
-    // Deploy to staging (main branch)
-    // --------------------------------------------------------------------
     stage('Deploy to STAGING (main:/docs-staging)') {
       when { branch 'main' }
       steps {
@@ -160,9 +153,6 @@ pipeline {
       }
     }
 
-    // --------------------------------------------------------------------
-    // Deploy to production (main:/docs)
-    // --------------------------------------------------------------------
     stage('Deploy to PRODUCTION (main:/docs)') {
       when { branch 'main' }
       steps {
@@ -187,18 +177,16 @@ pipeline {
       }
     }
 
-    // --------------------------------------------------------------------
-    // Push build status to Grafana Loki
-    // --------------------------------------------------------------------
-    stage('Loki: Publish Build Result') {
+    // ---------- Grafana Loki publish ----------
+    stage('Loki: Publish Pipeline Summary') {
       steps {
         script {
-          def statusVal = currentBuild?.currentResult ?: 'SUCCESS'
+          def resultVal = currentBuild?.currentResult ?: 'SUCCESS'
           withCredentials([
             string(credentialsId: 'grafana-loki-url', variable: 'LOKI_URL'),
             usernamePassword(credentialsId: 'grafana-loki-basic', passwordVariable: 'LOKI_TOKEN', usernameVariable: 'LOKI_USER')
           ]) {
-            withEnv(["STATUS=${statusVal}"]) {
+            withEnv(["PIPE_RESULT=${resultVal}"]) {
               sh '''
 bash -eu -c "
   # Ensure jq
@@ -209,15 +197,20 @@ bash -eu -c "
     fi
   fi
 
-  STREAM_LABELS=$(jq -n --arg job \\"calculator-app\\" \
-                        --arg repo \\"${GIT_URL:-unknown}\\" \
-                        --arg branch \\"${BRANCH_NAME:-unknown}\\" \
+  STREAM_LABELS=$(jq -n --arg job \\"app-pipeline\\" \
+                        --arg repo \\"${GITHUB_REPO}\\" \
+                        --arg branch \\"${BRANCH_NAME:-main}\\" \
                         --arg build \\"${BUILD_NUMBER}\\" \
-                        --arg status \\"${STATUS}\\" \
+                        --arg status \\"${PIPE_RESULT}\\" \
                         '{job:$job,repo:$repo,branch:$branch,build:$build,status:$status}')
-  EXTRA_FIELDS=\\"{\\\\\\"build_url\\\\\\":\\\\\\"${BUILD_URL}\\\\\\",\\\\\\"commit\\\\\\":\\\\\\"${GIT_COMMIT}\\\\\\"}\\"
-  LOG_MESSAGE=\\"App pipeline result: ${STATUS}\\"
-  export STREAM_LABELS EXTRA_FIELDS LOG_MESSAGE
+  export STREAM_LABELS
+
+  EXTRA_FIELDS=$(jq -n --arg url \\"${BUILD_URL}\\" --arg commit \\"${GIT_COMMIT}\\" '{build_url:$url,commit:$commit}')
+  export EXTRA_FIELDS
+
+  LOG_MESSAGE=\\"App pipeline run ${PIPE_RESULT} for build ${BUILD_NUMBER}\\"
+  export LOG_MESSAGE
+
   ./ci/push_to_loki.sh
 "
 '''
