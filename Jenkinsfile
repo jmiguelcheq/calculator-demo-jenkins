@@ -75,7 +75,7 @@ pipeline {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
                   "RUN_URL=${buildRes.absoluteUrl}",
-                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single/index.html"
+                  "ALLURE_HTML_URL=${buildRes.absoluteUrl}artifact/target/allure-single"
                 ]) {
                   sh '''
                     set -eu
