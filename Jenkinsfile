@@ -11,6 +11,16 @@ pipeline {
   stages {
     stage('Checkout') { steps { checkout scm } }
 
+    // Make sure our CI helper is executable
+    stage('CI Permissions') {
+      steps {
+        sh '''
+          set -eu
+          [ -f ci/push_to_loki.sh ] && chmod +x ci/push_to_loki.sh || true
+        '''
+      }
+    }
+
     stage('Guard: Skip deploy commits') {
       steps {
         script {
@@ -70,7 +80,6 @@ pipeline {
               }
             }
 
-            // ✅ Final safe PR comment on failure (no heredoc, no awk, fully portable)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
@@ -79,27 +88,17 @@ pipeline {
                 ]) {
                   sh '''
                     set -eu
-
                     pr=${CHANGE_ID}
                     repo=${CHANGE_URL#*github.com/}
                     repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
-
-                    # Build the JSON payload manually (single line with \\n)
                     json="{\\\"body\\\": \\\"🚨 **Automation tests failed** for this PR.\\\\n\\\\n**Test Run:** $RUN_URL  \\\\n**Allure Report (View):** $ALLURE_HTML_URL\\\\n\\\\n> Conclusion: **FAILURE**\\\"}"
-
-                    echo "Posting PR comment to https://api.github.com/repos/$repo/issues/$pr/comments"
-                    curl -sS \
-                      -H "Authorization: Bearer $GITHUB_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                      -d "$json"
+                    curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                         -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" -d "$json"
                   '''
                 }
               }
             }
-            // -------------------------------------------
-
             error("Failing because testing repo reported ${buildRes.result}.")
           } else {
             if (env.GIT_COMMIT) {
@@ -112,6 +111,44 @@ pipeline {
               }
             }
           }
+        }
+      }
+    }
+
+    // NEW: Push final app pipeline status to Grafana Loki
+    stage('Loki: Publish Build Result') {
+      steps {
+        withCredentials([
+          string(credentialsId: 'grafana-loki-url', variable: 'LOKI_URL'),
+          usernamePassword(credentialsId: 'grafana-loki-basic', passwordVariable: 'LOKI_TOKEN', usernameVariable: 'LOKI_USER')
+        ]) {
+          sh '''
+            set -euo pipefail
+            STATUS="${currentBuild.result:-SUCCESS}"
+
+            # Ensure python3 for JSON escaping inside script (if needed)
+            if ! command -v python3 >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y python3 >/dev/null 2>&1 || true; fi
+              if command -v apk >/dev/null 2>&1; then apk add --no-cache python3 >/dev/null 2>&1 || true; fi
+            fi
+
+            STREAM_LABELS=$(python3 - <<'PY'
+import json, os
+print(json.dumps({
+  "job": "calculator-app",
+  "repo": os.environ.get("GIT_URL","unknown"),
+  "branch": os.environ.get("BRANCH_NAME","unknown"),
+  "build": os.environ.get("BUILD_NUMBER","0"),
+  "status": os.environ.get("STATUS","UNKNOWN")
+}))
+PY
+)
+            EXTRA_FIELDS='{"build_url":"'"${BUILD_URL}"'","commit":"'"${GIT_COMMIT}"'"}'
+            LOG_MESSAGE="App pipeline result: ${STATUS}"
+
+            export STREAM_LABELS EXTRA_FIELDS LOG_MESSAGE
+            ./ci/push_to_loki.sh
+          '''
         }
       }
     }
