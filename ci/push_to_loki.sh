@@ -1,68 +1,42 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+# Minimal, POSIX-safe Loki pusher. Requires: jq, curl.
+# Inputs:
+#   LOKI_URL, LOKI_USER, LOKI_TOKEN
+#   STREAM_LABELS  (JSON object, e.g. {"job":"calculator-tests","branch":"main"})
+#   LOG_MESSAGE    (string)
+#   EXTRA_FIELDS   (JSON object, optional; merged into the log line JSON)
 
-# Required env:
-#   LOKI_URL, LOKI_USER, LOKI_TOKEN (basic auth)
-#   STREAM_LABELS (JSON) e.g. {"job":"calculator-tests","repo":"jmiguelcheq/calculator-test-demo-jenkins"}
-#   LOG_MESSAGE   (string)
-#
-# Optional:
-#   EXTRA_FIELDS (JSON) merged into log line as key=value pairs
+set -eu
 
-ts_ns() { date +%s%N; }
+# ns timestamp
+ts_ns="$(date +%s%N)"
 
-json_escape() {
-  # escape for JSON string
-  python3 - <<'PY'
-import json, sys
-print(json.dumps(sys.stdin.read()))
-PY
-}
+# Defaults
+: "${STREAM_LABELS:={}}"
+: "${EXTRA_FIELDS:={}}"
+: "${LOG_MESSAGE:=}"
 
-main() {
-  local ts="$(ts_ns)"
-  local msg="$(echo -n "${LOG_MESSAGE:-}" | json_escape)"
-  local labels="${STREAM_LABELS:-{}}"
-  local extras="${EXTRA_FIELDS:-{}}"
+# Build Loki payload: labels in 'stream', and JSON log line as the entry text
+# (We send a JSON string as the log line so you can parse with:  | json  in LogQL)
+payload="$(jq -cn \
+  --arg ts "$ts_ns" \
+  --argjson labels "$STREAM_LABELS" \
+  --arg msg "$LOG_MESSAGE" \
+  --argjson extras "$EXTRA_FIELDS" '
+  {
+    streams: [
+      {
+        stream: $labels,
+        values: [
+          [ $ts, ( $extras + {msg: $msg} | @json ) ]
+        ]
+      }
+    ]
+  }')"
 
-  # Format key=value extras right inside the log line
-  # Turn {"a":1,"b":"x"} -> a=1 b="x"
-  local kv=$(python3 - <<PY
-import json,sys
-d=json.loads(sys.argv[1]) if sys.argv[1] else {}
-def fmt(v):
-  return str(v) if isinstance(v,(int,float)) else '"%s"'%str(v).replace('"','\\"')
-print(" ".join([f"{k}="+fmt(v) for k,v in d.items()]))
-PY
-"${extras}")
-  )
+curl -sSf -u "${LOKI_USER}:${LOKI_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -X POST "${LOKI_URL}" \
+  --data-binary "${payload}"
 
-  local line=$(python3 - <<PY
-import json,sys
-labels=json.loads(sys.argv[1])
-print(json.dumps(labels))
-PY
-"${labels}")
-
-  cat > /tmp/loki-payload.json <<EOF
-{
-  "streams": [
-    {
-      "stream": ${line},
-      "values": [
-        [ "${ts}", $(echo -n "${kv} " ; echo -n "msg=" ; echo -n "${msg}") ]
-      ]
-    }
-  ]
-}
-EOF
-
-  curl -sSf -u "${LOKI_USER}:${LOKI_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -X POST "${LOKI_URL}" \
-    --data-binary @/tmp/loki-payload.json
-
-  echo "✅ Pushed to Loki"
-}
-
-main "$@"
+echo "✅ Pushed to Loki"
