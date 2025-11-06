@@ -70,7 +70,7 @@ pipeline {
               }
             }
 
-            // PR comment on failure
+            // ✅ Final safe PR comment on failure (no heredoc, no awk, fully portable)
             if (env.CHANGE_ID) {
               withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
                 withEnv([
@@ -85,20 +85,10 @@ pipeline {
                     repo=${repo%%/pull/*}
                     [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                    # 1) Build the markdown (use explicit \n for line breaks)
-                    body="$(printf '🚨 **Automation tests failed** for this PR.\\n\\n**Test Run:** %s  \\n**Allure Report (View):** %s\\n\\n> Conclusion: **FAILURE**' "$RUN_URL" "$ALLURE_HTML_URL")"
+                    # Build the JSON payload manually (single line with \\n)
+                    json="{\\\"body\\\": \\\"🚨 **Automation tests failed** for this PR.\\\\n\\\\n**Test Run:** $RUN_URL  \\\\n**Allure Report (View):** $ALLURE_HTML_URL\\\\n\\\\n> Conclusion: **FAILURE**\\\"}"
 
-                    # 2) JSON-escape without jq/python:
-                    #    - escape backslashes
-                    #    - escape double quotes
-                    #    - turn real newlines into \n sequences
-                    escaped=$(printf %s "$body" \
-                      | awk '{gsub(/\\/,"\\\\"); gsub(/\"/,"\\\""); printf "%s\\n",$0}' \
-                      | sed '$ s/\\n$//')
-
-                    json="{ \"body\": \"$escaped\" }"
-
-                    # 3) POST to GitHub PR comments API
+                    echo "Posting PR comment to https://api.github.com/repos/$repo/issues/$pr/comments"
                     curl -sS \
                       -H "Authorization: Bearer $GITHUB_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
