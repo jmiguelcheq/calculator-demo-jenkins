@@ -188,32 +188,37 @@ pipeline {
           ]) {
             withEnv(["PIPE_RESULT=${resultVal}"]) {
               sh '''
-bash -eu -c "
-  # Ensure jq
-  if ! command -v jq >/dev/null 2>&1; then
-    if   command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq >/dev/null 2>&1 || true;
-    elif command -v apk     >/dev/null 2>&1; then apk add --no-cache jq >/dev/null 2>&1 || true;
-    elif command -v yum     >/dev/null 2>&1; then yum install -y jq >/dev/null 2>&1 || true;
-    fi
-  fi
+                set -eu
 
-  STREAM_LABELS=$(jq -n --arg job \\"app-pipeline\\" \
-                        --arg repo \\"${GITHUB_REPO}\\" \
-                        --arg branch \\"${BRANCH_NAME:-main}\\" \
-                        --arg build \\"${BUILD_NUMBER}\\" \
-                        --arg status \\"${PIPE_RESULT}\\" \
-                        '{job:$job,repo:$repo,branch:$branch,build:$build,status:$status}')
-  export STREAM_LABELS
+                # Ensure jq before we use it
+                if ! command -v jq >/dev/null 2>&1; then
+                  if   command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq >/dev/null 2>&1 || true;
+                  elif command -v apk     >/dev/null 2>&1; then apk add --no-cache jq >/dev/null 2>&1 || true;
+                  elif command -v yum     >/dev/null 2>&1; then yum install -y jq >/dev/null 2>&1 || true;
+                  fi
+                fi
 
-  EXTRA_FIELDS=$(jq -n --arg url \\"${BUILD_URL}\\" --arg commit \\"${GIT_COMMIT}\\" '{build_url:$url,commit:$commit}')
-  export EXTRA_FIELDS
+                # Build JSON inside this single shell block (no precomputed jq outside!)
+                STREAM_LABELS=$(jq -n \
+                  --arg job    "app-pipeline" \
+                  --arg repo   "${GITHUB_REPO}" \
+                  --arg branch "${BRANCH_NAME:-unknown}" \
+                  --arg build  "${BUILD_NUMBER}" \
+                  --arg status "${PIPE_RESULT}" \
+                  '{job:$job,repo:$repo,branch:$branch,build:$build,status:$status}')
+                export STREAM_LABELS
 
-  LOG_MESSAGE=\\"App pipeline run ${PIPE_RESULT} for build ${BUILD_NUMBER}\\"
-  export LOG_MESSAGE
+                EXTRA_FIELDS=$(jq -n \
+                  --arg url    "${BUILD_URL}" \
+                  --arg commit "${GIT_COMMIT}" \
+                  '{build_url:$url,commit:$commit}')
+                export EXTRA_FIELDS
 
-  ./ci/push_to_loki.sh
-"
-'''
+                LOG_MESSAGE="App pipeline run ${PIPE_RESULT} for build ${BUILD_NUMBER}"
+                export LOG_MESSAGE
+
+                ./ci/push_to_loki.sh
+              '''
             }
           }
         }
