@@ -1,12 +1,14 @@
+import groovy.json.JsonOutput
+
 pipeline {
   agent any
   options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED') }
 
   environment {
-    GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
-    TEST_PARENT   = 'calculator-test-demo-jenkins'
-    TEST_BRANCH   = 'main'
-    TEST_RUN_URL  = ''
+    GITHUB_REPO  = 'jmiguelcheq/calculator-demo-jenkins'
+    TEST_PARENT  = 'calculator-test-demo-jenkins'
+    TEST_BRANCH  = 'main'
+    TEST_RUN_URL = ''   // set after child job runs
   }
 
   stages {
@@ -77,7 +79,7 @@ pipeline {
 
           echo "Testing result: ${buildRes.result}"
 
-          // Capture child run URL and normalize
+          // ---- Capture and normalize test run URL ----
           def runUrl = (buildRes?.absoluteUrl ?: '').trim()
           if (runUrl && !runUrl.endsWith('/')) {
             runUrl = runUrl + '/'
@@ -85,7 +87,7 @@ pipeline {
           env.TEST_RUN_URL = runUrl
           echo "Recorded TEST_RUN_URL=${env.TEST_RUN_URL}"
 
-          // Reflect child result on parent (but don't abort)
+          // ---- Reflect child result on parent, but do NOT abort ----
           def childResult = (buildRes?.result ?: 'FAILURE')
           currentBuild.result = childResult
 
@@ -93,8 +95,9 @@ pipeline {
           if (env.GIT_COMMIT) {
             withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
               def state = (childResult == 'SUCCESS') ? 'success' : 'failure'
-              def desc  = (state == 'success') ? 'Remote tests passed' : 'Remote tests failed'
+              def desc  = (state == 'SUCCESS') ? 'Remote tests passed' : 'Remote tests failed'
               sh """
+                set -eu
                 curl -sS \
                   -H "Authorization: Bearer $GITHUB_TOKEN" \
                   -H "Accept: application/vnd.github+json" \
@@ -104,47 +107,52 @@ pipeline {
             }
           }
 
-          // ---- PR failure comment (only on PR + failure) ----
+          // ---- PR failure comment (only for PRs + failed tests) ----
           if (env.CHANGE_ID && childResult != 'SUCCESS') {
             withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-              def allureUrl = runUrl ? runUrl + 'artifact/target/allure-single/index.html' : ''
-              def safeRun   = runUrl ?: 'N/A'
-              def safeAllure = allureUrl ?: 'N/A'
+
+              // derive repo slug from CHANGE_URL, fallback to GITHUB_REPO
+              def repoSlug = (env.CHANGE_URL ?: "")
+                .replaceFirst('^.*github.com/', '')
+                .replaceFirst('/pull/.*$', '')
+              if (!repoSlug) {
+                repoSlug = env.GITHUB_REPO
+              }
+
+              def runUrlForBody    = runUrl ?: 'N/A'
+              def allureUrlForBody = runUrl ? runUrl + 'artifact/target/allure-single/index.html' : 'N/A'
+
+              def body = """🚨 **Automation tests failed** for this PR.
+
+**Test Run:** ${runUrlForBody}
+**Allure Report:** ${allureUrlForBody}
+
+> Conclusion: **FAILURE**"""
+
+              def json = JsonOutput.toJson([body: body])
 
               withEnv([
-                "PR_NUM=${env.CHANGE_ID}",
-                "RUN_URL=${safeRun}",
-                "ALLURE_HTML_URL=${safeAllure}"
+                "COMMENT_JSON=${json}",
+                "REPO_SLUG=${repoSlug}"
               ]) {
                 sh '''
                   set -eu
-
-                  repo=${CHANGE_URL#*github.com/}
-                  repo=${repo%%/pull/*}
-                  [ -n "$repo" ] || repo="$GITHUB_REPO"
-
-                  body="🚨 **Automation tests failed** for this PR.\\n\\n"
-                  body+="**Test Run:** ${RUN_URL}\\n"
-                  body+="**Allure Report:** ${ALLURE_HTML_URL}\\n\\n"
-                  body+="> Conclusion: **FAILURE**"
-
-                  # Escape newlines for JSON
-                  json_body=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}))')
-
                   curl -sS \
                     -H "Authorization: Bearer $GITHUB_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
-                    -X POST "https://api.github.com/repos/$repo/issues/$PR_NUM/comments" \
-                    -d "$json_body"
+                    -X POST "https://api.github.com/repos/$REPO_SLUG/issues/$CHANGE_ID/comments" \
+                    -d "$COMMENT_JSON"
                 '''
               }
             }
           }
+
+          // no error() here — allow post + Loki stages to run
         }
       }
     }
 
-    stage('Deploy to STAGING') {
+    stage('Deploy to STAGING (main:/docs-staging)') {
       when {
         allOf {
           branch 'main'
@@ -186,7 +194,7 @@ pipeline {
       }
     }
 
-    stage('Deploy to PRODUCTION') {
+    stage('Deploy to PRODUCTION (main:/docs)') {
       when {
         allOf {
           branch 'main'
@@ -216,6 +224,7 @@ pipeline {
     }
   }
 
+  // ---- ALWAYS: push pipeline summary to Loki (success or failure) ----
   post {
     always {
       script {
