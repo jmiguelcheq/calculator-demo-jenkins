@@ -120,7 +120,7 @@ pipeline {
               }
 
               def runUrlForBody    = runUrl ?: 'N/A'
-              def allureUrlForBody = runUrl ? runUrl + 'artifact/target/allure-single/index.html' : 'N/A'
+              def allureUrlForBody = runUrl ? runUrl + 'artifact/target/allure-single/' : 'N/A'
 
               def body = """🚨 **Automation tests failed** for this PR.
 
