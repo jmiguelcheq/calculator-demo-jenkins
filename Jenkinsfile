@@ -3,11 +3,10 @@ pipeline {
   options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED') }
 
   environment {
-    GITHUB_REPO = 'jmiguelcheq/calculator-demo-jenkins'
-    TEST_PARENT = 'calculator-test-demo-jenkins'
-    TEST_BRANCH = 'main'
-    // Will be set after we trigger the test job (handy for Grafana/PR comments)
-    TEST_RUN_URL = ''
+    GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
+    TEST_PARENT   = 'calculator-test-demo-jenkins'
+    TEST_BRANCH   = 'main'
+    TEST_RUN_URL  = ''
   }
 
   stages {
@@ -32,7 +31,6 @@ pipeline {
           if (msg.toLowerCase().contains('[skip ci]')) {
             echo 'Detected [skip ci] deploy commit. Skipping pipeline.'
             currentBuild.description = 'Skipped: deploy commit'
-            // Do not error; just mark and continue so post { always } still runs.
             currentBuild.result = 'NOT_BUILT'
           }
         }
@@ -65,7 +63,8 @@ pipeline {
         script {
           def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"
 
-          def buildRes = build job: childPath,
+          def buildRes = build(
+            job: childPath,
             wait: true,
             propagate: false,
             parameters: [
@@ -74,59 +73,82 @@ pipeline {
               string(name: 'CALC_URL', value: ''),
               booleanParam(name: 'HEADLESS', value: true)
             ]
+          )
 
           echo "Testing result: ${buildRes.result}"
-          env.TEST_RUN_URL = buildRes.absoluteUrl ?: ''
 
-          // reflect child result onto this pipeline but DO NOT abort
-          currentBuild.result = (buildRes.result ?: 'FAILURE')
+          // Capture child run URL and normalize
+          def runUrl = (buildRes?.absoluteUrl ?: '').trim()
+          if (runUrl && !runUrl.endsWith('/')) {
+            runUrl = runUrl + '/'
+          }
+          env.TEST_RUN_URL = runUrl
+          echo "Recorded TEST_RUN_URL=${env.TEST_RUN_URL}"
 
-          // GitHub commit status
+          // Reflect child result on parent (but don't abort)
+          def childResult = (buildRes?.result ?: 'FAILURE')
+          currentBuild.result = childResult
+
+          // ---- GitHub commit status ----
           if (env.GIT_COMMIT) {
             withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
-              def state  = (currentBuild.result == 'SUCCESS') ? 'success' : 'failure'
-              def desc   = (state == 'success') ? 'Remote tests passed' : 'Remote tests failed'
+              def state = (childResult == 'SUCCESS') ? 'success' : 'failure'
+              def desc  = (state == 'success') ? 'Remote tests passed' : 'Remote tests failed'
               sh """
-                curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                curl -sS \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
                   -X POST "https://api.github.com/repos/$GITHUB_REPO/statuses/$GIT_COMMIT" \
                   -d '{ "state": "${state}", "context": "Remote UI Tests", "description": "${desc}", "target_url": "'$BUILD_URL'" }'
               """
             }
           }
 
-          // PR failure comment (only when failing and on PR)
-          if (env.CHANGE_ID && currentBuild.result != 'SUCCESS') {
+          // ---- PR failure comment (only on PR + failure) ----
+          if (env.CHANGE_ID && childResult != 'SUCCESS') {
             withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
+              def allureUrl = runUrl ? runUrl + 'artifact/target/allure-single/index.html' : ''
+              def safeRun   = runUrl ?: 'N/A'
+              def safeAllure = allureUrl ?: 'N/A'
+
               withEnv([
-                "RUN_URL=${env.TEST_RUN_URL}",
-                "ALLURE_HTML_URL=${env.TEST_RUN_URL}artifact/target/allure-single"
+                "PR_NUM=${env.CHANGE_ID}",
+                "RUN_URL=${safeRun}",
+                "ALLURE_HTML_URL=${safeAllure}"
               ]) {
                 sh '''
                   set -eu
-                  pr=${CHANGE_ID}
+
                   repo=${CHANGE_URL#*github.com/}
                   repo=${repo%%/pull/*}
                   [ -n "$repo" ] || repo="$GITHUB_REPO"
 
-                  json="{\\\"body\\\": \\\"🚨 **Automation tests failed** for this PR.\\\\n\\\\n**Test Run:** $RUN_URL  \\\\n**Allure Report:** $ALLURE_HTML_URL\\\\n\\\\n> Conclusion: **FAILURE**\\\"}"
-                  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                    -X POST "https://api.github.com/repos/$repo/issues/$pr/comments" \
-                    -d "$json"
+                  body="🚨 **Automation tests failed** for this PR.\\n\\n"
+                  body+="**Test Run:** ${RUN_URL}\\n"
+                  body+="**Allure Report:** ${ALLURE_HTML_URL}\\n\\n"
+                  body+="> Conclusion: **FAILURE**"
+
+                  # Escape newlines for JSON
+                  json_body=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps({"body": sys.stdin.read()}))')
+
+                  curl -sS \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -X POST "https://api.github.com/repos/$repo/issues/$PR_NUM/comments" \
+                    -d "$json_body"
                 '''
               }
             }
           }
-
-          // DO NOT call error(...) here — we want later stages (esp. Loki) to run.
         }
       }
     }
 
-    stage('Deploy to STAGING (main:/docs-staging)') {
+    stage('Deploy to STAGING') {
       when {
         allOf {
           branch 'main'
-          expression { currentBuild.currentResult == 'SUCCESS' } // skip on failures
+          expression { currentBuild.currentResult == 'SUCCESS' }
         }
       }
       steps {
@@ -164,7 +186,7 @@ pipeline {
       }
     }
 
-    stage('Deploy to PRODUCTION (main:/docs)') {
+    stage('Deploy to PRODUCTION') {
       when {
         allOf {
           branch 'main'
@@ -194,7 +216,6 @@ pipeline {
     }
   }
 
-  // ---- ALWAYS push a pipeline summary to Grafana Loki (even if failed) ----
   post {
     always {
       script {
@@ -206,6 +227,7 @@ pipeline {
           withEnv(["PIPE_RESULT=${resultVal}"]) {
             sh '''
               set -eu
+
               if ! command -v jq >/dev/null 2>&1; then
                 if   command -v apt-get >/dev/null 2>&1; then apt-get update -y && apt-get install -y jq >/dev/null 2>&1 || true;
                 elif command -v apk     >/dev/null 2>&1; then apk add --no-cache jq >/dev/null 2>&1 || true;
