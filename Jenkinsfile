@@ -263,7 +263,7 @@ pipeline {
               LOG_MESSAGE="App pipeline run ${PIPE_RESULT} for build ${BUILD_NUMBER}"
               export LOG_MESSAGE
 
-              ./ci/push_to_loki.sh
+              ./ci/push_to_loki.sh || echo "⚠️ Loki push failed (non-blocking)."
             '''
           }
         }
