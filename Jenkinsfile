@@ -2,7 +2,7 @@ import groovy.json.JsonOutput
 
 pipeline {
   agent any
-  options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED') }
+  options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED'); skipDefaultCheckout() }
 
   environment {
     GITHUB_REPO  = 'jmiguelcheq/calculator-demo-jenkins'
@@ -32,7 +32,7 @@ pipeline {
           def msg = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
           if (msg.toLowerCase().contains('[skip ci]')) {
             echo 'Detected [skip ci] deploy commit. Skipping pipeline.'
-            currentBuild.description = 'Skipped: deploy commit'
+            // currentBuild.description = 'Skipped: deploy commit'
             currentBuild.result = 'NOT_BUILT'
           }
         }
