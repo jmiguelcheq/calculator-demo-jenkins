@@ -231,7 +231,7 @@ pipeline {
         def resultVal = currentBuild?.currentResult ?: 'FAILURE'
         withCredentials([
           string(credentialsId: 'grafana-loki-url',   variable: 'LOKI_URL'),
-          usernamePassword(credentialsId: 'grafana-loki-basic', passwordVariable: 'LOKI_TOKEN', usernameVariable: 'LOKI_USER')
+          usernamePassword(credentialsId: 'grafana-loki-user', passwordVariable: 'LOKI_TOKEN', usernameVariable: 'LOKI_USER')
         ]) {
           withEnv(["PIPE_RESULT=${resultVal}"]) {
             sh '''
