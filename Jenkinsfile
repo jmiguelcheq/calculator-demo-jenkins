@@ -5,10 +5,10 @@ pipeline {
   options { timestamps(); durabilityHint('PERFORMANCE_OPTIMIZED'); skipDefaultCheckout() }
 
   environment {
-    GITHUB_REPO  = 'jmiguelcheq/calculator-demo-jenkins'
-    TEST_PARENT  = 'calculator-test-demo-jenkins'
-    TEST_BRANCH  = 'main'
-    TEST_RUN_URL = ''
+    GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
+    TEST_PARENT   = 'calculator-test-demo-jenkins'
+    TEST_BRANCH   = 'main'
+    TEST_RUN_URL  = ''
     TESTED_COMMIT = ''
   }
 
@@ -53,7 +53,8 @@ pipeline {
      * BUILD APP
      * --------------------------------------------------------- */
     stage('Build / Package App') {
-      when { not { changeset pattern: 'docs/**,docs-staging/**', comparator: 'ANT' } }
+      // Skip when docs/** changed (typical deploy commits), otherwise build
+      when { not { changeset pattern: 'docs/**', comparator: 'ANT' } }
       steps {
         sh '''
           set -e
@@ -65,7 +66,7 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * RUN AUTOMATION TESTS
+     * RUN AUTOMATION TESTS (full suite before any deploy)
      * --------------------------------------------------------- */
     stage('Run Automation Tests (Testing repo)') {
       when {
@@ -74,13 +75,14 @@ pipeline {
             allOf { changeRequest(); expression { env.CHANGE_TARGET == 'main' } }
             branch 'main'
           }
-          not { changeset pattern: 'docs/**,docs-staging/**', comparator: 'ANT' }
+          // Also skip tests when only docs/** changed (deploy commits)
+          not { changeset pattern: 'docs/**', comparator: 'ANT' }
         }
       }
       steps {
         script {
 
-          // NEW — get safe commit SHA for PR or branch builds
+          // Get safe commit SHA for PR or branch builds
           def commitSha = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
           env.TESTED_COMMIT = commitSha
           echo "Resolved commit SHA: ${commitSha}"
@@ -93,7 +95,7 @@ pipeline {
             propagate: false,
             parameters: [
               string(name: 'APP_REPO', value: env.GITHUB_REPO),
-              string(name: 'APP_SHA',  value: commitSha),
+              string(name: 'APP_SHA',  value: commitSha), // LOCAL mode
               string(name: 'CALC_URL', value: ''),
               booleanParam(name: 'HEADLESS', value: true)
             ]
@@ -161,9 +163,9 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * DEPLOY STAGING
+     * DEPLOY STAGING (GitHub Pages under /docs/staging)
      * --------------------------------------------------------- */
-    stage('Deploy to STAGING (main:/docs-staging)') {
+    stage('Deploy to STAGING (main:/docs/staging)') {
       when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
@@ -171,17 +173,55 @@ pipeline {
             set -e
             git config --global user.email "jenkins@local"
             git config --global user.name "Jenkins CI"
+
             rm -rf /tmp/gh && mkdir -p /tmp/gh && cd /tmp/gh
             git init
             git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
             git fetch origin main --depth=1
             git checkout -B main origin/main
-            rm -rf docs-staging && mkdir -p docs-staging
-            cp -r "$WORKSPACE/dist/"* docs-staging/ || true
+
+            # Staging under docs/staging (GitHub Pages root stays /docs)
+            rm -rf docs/staging && mkdir -p docs/staging
+            cp -r "$WORKSPACE/dist/"* docs/staging/ || true
+
             git add .
-            git commit -m "[skip ci] Deploy STAGING (docs-staging) from build #$BUILD_NUMBER" || true
+            git commit -m "[skip ci] Deploy STAGING (docs/staging) from build #$BUILD_NUMBER" || true
             git push origin main
           '''
+        }
+      }
+    }
+
+    /* ---------------------------------------------------------
+     * SMOKE TEST STAGING
+     * --------------------------------------------------------- */
+    stage('Smoke Test STAGING') {
+      when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
+      steps {
+        script {
+          def childPath  = "${env.TEST_PARENT}/${env.TEST_BRANCH}"
+          def stagingUrl = 'https://jmiguelcheq.github.io/calculator-demo-jenkins/staging/'
+
+          echo "Triggering full test suite as smoke against STAGING URL: ${stagingUrl}"
+
+          def smokeRes = build(
+            job: childPath,
+            wait: true,
+            propagate: false,
+            parameters: [
+              // REMOTE mode: no APP_SHA, just CALC_URL
+              string(name: 'APP_REPO', value: env.GITHUB_REPO),
+              string(name: 'APP_SHA',  value: ''),
+              string(name: 'CALC_URL', value: stagingUrl),
+              booleanParam(name: 'HEADLESS', value: true)
+            ]
+          )
+
+          echo "Staging smoke test result: ${smokeRes.result}"
+
+          if (smokeRes.result != 'SUCCESS') {
+            error "Smoke tests on STAGING failed – blocking Production deploy."
+          }
         }
       }
     }
@@ -209,14 +249,17 @@ pipeline {
             set -e
             git config --global user.email "jenkins@local"
             git config --global user.name "Jenkins CI"
+
             rm -rf /tmp/ghprod && mkdir -p /tmp/ghprod && cd /tmp/ghprod
             git init
             git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
             git fetch origin main --depth=1
             git checkout -B main origin/main
+
             rm -rf docs && mkdir -p docs
             cp -r "$WORKSPACE/dist/"* docs/ || true
             touch docs/.nojekyll
+
             git add .
             git commit -m "[skip ci] Deploy PRODUCTION (docs) from build #$BUILD_NUMBER" || true
             git push origin main
