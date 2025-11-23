@@ -71,11 +71,10 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * RUN AUTOMATION TESTS (PRs only)
+     * RUN AUTOMATION TESTS
      * --------------------------------------------------------- */
     stage('Run Automation Tests (Testing repo)') {
       when {
-        // ✅ Only run for PRs targeting main (not for main branch itself)
         allOf {
           changeRequest()
           expression { env.CHANGE_TARGET == 'main' }
