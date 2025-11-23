@@ -6,8 +6,13 @@ pipeline {
 
   environment {
     GITHUB_REPO   = 'jmiguelcheq/calculator-demo-jenkins'
+
+    STAGING_REPO  = 'jmiguelcheq/calculator-demo-staging'
+    STAGING_URL   = 'https://jmiguelcheq.github.io/calculator-demo-staging/'
+
     TEST_PARENT   = 'calculator-test-demo-jenkins'
     TEST_BRANCH   = 'main'
+
     TEST_RUN_URL  = ''
     TESTED_COMMIT = ''
   }
@@ -78,7 +83,6 @@ pipeline {
       }
       steps {
         script {
-
           // Get safe commit SHA for PR builds
           def commitSha = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
           env.TESTED_COMMIT = commitSha
@@ -160,9 +164,9 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * DEPLOY STAGING (GitHub Pages under /docs/staging)
+     * DEPLOY TO STAGING
      * --------------------------------------------------------- */
-    stage('Deploy to STAGING (main:/docs/staging)') {
+    stage('Deploy to STAGING (calculator-demo-staging)') {
       when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
       steps {
         withCredentials([string(credentialsId: 'github-pat', variable: 'GITHUB_TOKEN')]) {
@@ -171,18 +175,28 @@ pipeline {
             git config --global user.email "jenkins@local"
             git config --global user.name "Jenkins CI"
 
-            rm -rf /tmp/gh && mkdir -p /tmp/gh && cd /tmp/gh
+            # Clone staging repo
+            rm -rf /tmp/gh-staging && mkdir -p /tmp/gh-staging && cd /tmp/gh-staging
             git init
-            git remote add origin "https://$GITHUB_TOKEN@github.com/$GITHUB_REPO.git"
-            git fetch origin main --depth=1
-            git checkout -B main origin/main
+            git remote add origin "https://$GITHUB_TOKEN@github.com/$STAGING_REPO.git"
 
-            # Staging under docs/staging (GitHub Pages root stays /docs)
-            rm -rf docs/staging && mkdir -p docs/staging
-            cp -r "$WORKSPACE/dist/"* docs/staging/ || true
+            # Fetch existing staging contents (keep README etc.)
+            git fetch origin main --depth=1 || true
 
-            git add .
-            git commit -m "[skip ci] Deploy STAGING (docs/staging) from build #$BUILD_NUMBER" || true
+            if git rev-parse --verify origin/main >/dev/null 2>&1; then
+              git checkout -B main origin/main
+            else
+              git checkout -B main
+            fi
+
+            # Copy only index.html from built dist folder
+            cp -f "$WORKSPACE/dist/index.html" ./index.html
+
+            # Ensure GitHub Pages stays happy
+            touch .nojekyll
+
+            git add index.html .nojekyll
+            git commit -m "[skip ci] Deploy updated index.html to STAGING (build #$BUILD_NUMBER)" || true
             git push origin main
           '''
         }
@@ -196,10 +210,9 @@ pipeline {
       when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
       steps {
         script {
-          def childPath  = "${env.TEST_PARENT}/${env.TEST_BRANCH}"
-          def stagingUrl = 'https://jmiguelcheq.github.io/calculator-demo-jenkins/staging/'
+          def childPath = "${env.TEST_PARENT}/${env.TEST_BRANCH}"
 
-          echo "Triggering full test suite as smoke against STAGING URL: ${stagingUrl}"
+          echo "Triggering full test suite as smoke against STAGING URL: ${env.STAGING_URL}"
 
           def smokeRes = build(
             job: childPath,
@@ -209,7 +222,7 @@ pipeline {
               // REMOTE mode: no APP_SHA, just CALC_URL
               string(name: 'APP_REPO', value: env.GITHUB_REPO),
               string(name: 'APP_SHA',  value: ''),
-              string(name: 'CALC_URL', value: stagingUrl),
+              string(name: 'CALC_URL', value: env.STAGING_URL),
               booleanParam(name: 'HEADLESS', value: true)
             ]
           )
@@ -236,7 +249,7 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * DEPLOY PRODUCTION
+     * DEPLOY PRODUCTION (main:/docs)
      * --------------------------------------------------------- */
     stage('Deploy to PRODUCTION (main:/docs)') {
       when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
