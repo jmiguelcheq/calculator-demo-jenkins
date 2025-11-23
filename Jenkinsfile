@@ -42,8 +42,10 @@ pipeline {
         script {
           def msg = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
           if (msg.toLowerCase().contains('[skip ci]')) {
-            echo 'Detected [skip ci] deploy commit. Skipping pipeline.'
+            echo 'Detected [skip ci] deploy commit. Stopping pipeline early.'
             currentBuild.result = 'NOT_BUILT'
+            // hard-stop so later stages don’t run
+            error('[skip ci] deploy commit – aborting remaining stages.')
           }
         }
       }
@@ -53,8 +55,6 @@ pipeline {
      * BUILD APP
      * --------------------------------------------------------- */
     stage('Build / Package App') {
-      // Skip when docs/** changed (typical deploy commits), otherwise build
-      when { not { changeset pattern: 'docs/**', comparator: 'ANT' } }
       steps {
         sh '''
           set -e
@@ -70,13 +70,9 @@ pipeline {
      * --------------------------------------------------------- */
     stage('Run Automation Tests (Testing repo)') {
       when {
-        allOf {
-          anyOf {
-            allOf { changeRequest(); expression { env.CHANGE_TARGET == 'main' } }
-            branch 'main'
-          }
-          // Also skip tests when only docs/** changed (deploy commits)
-          not { changeset pattern: 'docs/**', comparator: 'ANT' }
+        anyOf {
+          allOf { changeRequest(); expression { env.CHANGE_TARGET == 'main' } }
+          branch 'main'
         }
       }
       steps {
