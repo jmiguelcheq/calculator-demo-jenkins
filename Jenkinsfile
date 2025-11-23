@@ -66,19 +66,20 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * RUN AUTOMATION TESTS (full suite before any deploy)
+     * RUN AUTOMATION TESTS (PRs only)
      * --------------------------------------------------------- */
     stage('Run Automation Tests (Testing repo)') {
       when {
-        anyOf {
-          allOf { changeRequest(); expression { env.CHANGE_TARGET == 'main' } }
-          branch 'main'
+        // ✅ Only run for PRs targeting main (not for main branch itself)
+        allOf {
+          changeRequest()
+          expression { env.CHANGE_TARGET == 'main' }
         }
       }
       steps {
         script {
 
-          // Get safe commit SHA for PR or branch builds
+          // Get safe commit SHA for PR builds
           def commitSha = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
           env.TESTED_COMMIT = commitSha
           echo "Resolved commit SHA: ${commitSha}"
@@ -189,7 +190,7 @@ pipeline {
     }
 
     /* ---------------------------------------------------------
-     * SMOKE TEST STAGING
+     * SMOKE TEST STAGING (second test run)
      * --------------------------------------------------------- */
     stage('Smoke Test STAGING') {
       when { allOf { branch 'main'; expression { currentBuild.currentResult == 'SUCCESS' } } }
